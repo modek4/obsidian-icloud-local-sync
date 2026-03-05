@@ -1,11 +1,33 @@
+# Obsidian iCloud Windows Sync
 
-## Running
+A highly optimized, asynchronous, three-way sync engine designed to solve the notorious issues between Obsidian, iCloud Drive, and Windows. 
 
-``` bash
-clear; python -u sync.py 2>&1 | Tee-Object -FilePath "out.log"
-```
+## Installation & Setup
 
---- 
+1. Clone the repository.
+2. Install the required Python packages:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Open `sync.py` and modify the `CONFIG` section with your actual paths:
+   ```python
+   LOCAL_VAULT = r"C:\Obsidian\Vault"
+   ICLOUD_VAULT = r"C:\Users\user\iCloudDrive\iCloud~md~obsidian"
+   HISTORY_DIR = r"C:\Obsidian\History"
+   LOGS_DIR = r"C:\Obsidian\Logs"
+   ```
+4. You can run the script using standard Python.
+   ```bash
+   python sync.py
+   ```
+
+### Modes of Operation
+You can toggle how the script behaves by changing the `RUN_CONTINUOUSLY` flag in the configuration:
+
+* **Daemon Mode (`RUN_CONTINUOUSLY = True`)**: The script runs indefinitely, scanning your vault every few seconds (`POLL_INTERVAL`). Perfect for running in the background while you work.
+* **One-Shot Mode (`RUN_CONTINUOUSLY = False`)**: The script scans the vault, performs exactly one full synchronization pass (waiting for all asynchronous tasks to finish safely), and then exits. Ideal for Windows Task Scheduler, startup scripts, or trigger shortcuts.
+
+---
 
 ## Problem (what went wrong with iCloud + Obsidian on Windows)
 
@@ -33,22 +55,6 @@ All of the above are symptoms of naive two-way syncing and OS/cloud-provider beh
 
 ---
 
-## High-level solution (what we aim to do)
-
-**Maintain a single authoritative local vault and a self-hosted local history, and synchronize that vault with the iCloud folder using a robust three-way algorithm.**
-
-Key principles:
-
-* Keep a **History** snapshot folder with the last-known-good content for each file. This gives a third reference point to detect which side changed (local vs iCloud) rather than reacting to metadata-only changes.
-* Always consider the **union** of files across Local, iCloud, and History (so deletions and creations anywhere are visible).
-* Use **stabilization windows** and **per-file cooldowns** to avoid acting on mid-write states or ephemeral untitled files.
-* Use **atomic copy + retry** for writes, with safe fallbacks to cope with transient Windows locks.
-* Be conservative with deletes and always log destructive actions; create conflict duplicates instead of silently overwriting.
-
-This design prevents duplicates like `Scratch (1).md`, avoids Obsidian “externally modified” races, and preserves user data.
-
----
-
 ## Core algorithm — three-way sync (Local / iCloud / History)
 
 Terminology:
@@ -61,11 +67,10 @@ The per-file decision procedure runs over the union of relative paths present in
 
 ### Preparations (per sync pass)
 
-1. Build the union set of relative file paths found under Local, iCloud, and History.
+1. Build the union set of relative file paths found under Local, iCloud, and History. Smart exclusions (like `.Trash`, `.DS_Store`, and temporary `.tmp` files) are applied here.
 2. For each file path:
-
    * Skip if file is on a short **cooldown** (recently synced).
-   * Use cheap checks (exists, size, mtime) first and only compute full content SHA-256 hashes if needed.
+   * Use cheap checks (exists, size, mtime via `sync_state.json` cache) first and only compute full content SHA-256 hashes if needed.
    * If hashing hits a locked/unreadable file, retry a few times with backoff.
 
 ### Stabilization & cooldown rules
@@ -73,6 +78,7 @@ The per-file decision procedure runs over the union of relative paths present in
 * **STABILITY_WINDOW** (e.g., 1–2s): when a file is newly created, deleted, or appears to have changed, wait this short interval before making destructive decisions. This handles `Untitled.md` → rename → typing workflows and avoids mid-save races.
 * **STABILIZE_WAIT** (longer, e.g., 8s): used only for “both changed” (conflict) cases to detect ongoing active editing.
 * **COOLDOWN_SECONDS** (short, e.g., 3s): after a successful push/restore, skip that file for a short period to avoid thrash from autosave.
+* **BIG_FILE_COOLDOWN** (long, e.g., 30s): prevents heavy assets (>100KB) from causing read/write loops while iCloud processes them.
 
 ### Decision rules (explicit cases)
 
@@ -80,13 +86,11 @@ The per-file decision procedure runs over the union of relative paths present in
 
 * **If `L` missing, but `C` and `H` exist** → (user deleted locally)
   Wait `STABILITY_WINDOW`, recheck hashes:
-
   * If `C == H` → **delete `C` and `H`** (confirm local deletion).
   * Else (`C != H`) → remote changed since last sync → **restore local from `C`** (do not delete remote).
 
 * **If `C` missing, but `L` and `H` exist** → (user deleted on iCloud)
   Wait `STABILITY_WINDOW`, recheck hashes:
-
   * If `L == H` → **delete `L` and `H`** (confirm remote deletion).
   * Else (`L != H`) → local changed → **push `L` → `C`** (do not delete local).
 
@@ -115,7 +119,6 @@ Compute stable content hashes for `L`, `C`, `H`:
 #### 4. Conflict: both changed (`L != H` and `C != H` and `L != C`)
 
 * Enter **STABILIZE_WAIT**, re-check hashes:
-
   * If one side is still actively changing (hash differs from previous), prefer the **active** side (push/restore accordingly).
   * If both stable, pick **newest by mtime**, but **create a conflict duplicate** of the losing side (`filename_CONFLICT_TIMESTAMP`) before overwriting. This preserves both versions and avoids data loss.
 
@@ -141,23 +144,18 @@ Compute stable content hashes for `L`, `C`, `H`:
 ## Example flows
 
 1. **Simple edit on Windows**
-
    * You edit `note.md` locally. `L` changes, `C == H`. The script sees `L != H && C == H` → pushes local to `C` and updates `H`.
 
 2. **Edit on iPhone (remote)**
-
    * `C` changes while `L == H`. Script sees `C != H && L == H` → restores local from `C` and updates `H`.
 
 3. **Simultaneous edits (rare)**
-
    * Both `L` and `C` differ from `H`. Script waits `STABILIZE_WAIT`. If one side is actively changing, prefer it. Otherwise pick latest by mtime but create `*_CONFLICT_TIMESTAMP.md` for the other side before overwriting.
 
 4. **Rename/Untitled workflow**
-
    * `Untitled.md` created → renamed → typed: stabilization prevents seeding history for the ephemeral tiny `Untitled.md`. After rename + typing, file is stable and then the script seeds and pushes, so rename behaves normally without causing deletes or duplicates.
 
 5. **Delete on local**
-
    * You delete `old.md` locally while `C` and `H` exist. Script waits `STABILITY_WINDOW`. If `C == H`, it deletes `C` and `H` (confirmed). If `C != H`, remote changed — it restores local.
 
 ---
