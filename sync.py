@@ -62,6 +62,8 @@ TINY_THRESHOLD = 8
 BIG_FILE_THRESHOLD = 100 * 1024
 # Current log file (initialized in main)
 CURRENT_LOG_FILE = None
+# Number of recent logs to keep, old ones will be deleted on startup to prevent disk clutter
+LOG_RETENTION = 10
 # ------------------------------------------
 
 # rel_path -> timestamp until which file is on cooldown
@@ -147,6 +149,22 @@ def log_success(msg):
 def log_action(msg):
     print(Fore.MAGENTA + "[ACTION] " + Style.RESET_ALL + msg)
     write_to_log_file("ACTION", msg)
+
+# Clean up old log files, keeping only the most recent 10 to prevent disk clutter over time.
+def cleanup_old_logs(keep=10):
+    try:
+        if not os.path.exists(LOGS_DIR):
+            return
+        logs = [os.path.join(LOGS_DIR, f) for f in os.listdir(LOGS_DIR) if f.endswith('.log')]
+        if len(logs) <= keep:
+            return
+        # Sort logs by modification time, oldest first
+        logs.sort(key=os.path.getmtime)
+        # Delete all but the most recent 'keep' logs
+        for old_log in logs[:-keep]:
+            os.remove(old_log)
+    except Exception as e:
+        print(Fore.RED + f"[ERROR] Failed to clean up old logs: {e}" + Style.RESET_ALL)
 
 # ----------- Utility helpers ------------
 # Ensure a directory exists, creating it if necessary
@@ -524,7 +542,32 @@ async def sync_file(rel_path, state):
     if H is None and (L is not None or C is not None):
         log_info(f"[HISTORY MISSING] Waiting to seed history for {disp(rel_path)}")
         Lh, Ch, Hh = await recheck_hashes()
-        if Lh is not None and size_or_zero(local) >= (TINY_THRESHOLD if 'obsidian' not in rel_path.lower() else 1):
+        # Safe seeding strategy:
+        if Lh is not None and Ch is not None:
+            if Lh == Ch:
+                # Files are identical, we can safely seed history
+                await async_copy(local, history)
+                H = Lh
+                log_info(f"Initialized history (identical files) for {disp(rel_path)}")
+            else:
+                # Conflict at start with no history
+                log_warn(f"[FIRST RUN CONFLICT] Local and iCloud differ for {disp(rel_path)}!")
+                local_m = safe_mtime(local)
+                icloud_m = safe_mtime(icloud)
+                # Keep the newer version as the main one, and create a conflict duplicate of the older version for recovery.
+                if local_m >= icloud_m:
+                    log_warn("Resolving start conflict: local is newer")
+                    await create_conflict_duplicate(icloud)
+                    await push_local_to_icloud(rel_path)
+                    H = Lh
+                else:
+                    log_warn("Resolving start conflict: iCloud is newer")
+                    await create_conflict_duplicate(local)
+                    await restore_local_from_icloud(rel_path)
+                    H = Ch
+                return
+        # If we can't read one side, we can still seed history from the other side if it looks valid (not tiny)
+        elif Lh is not None and size_or_zero(local) >= (TINY_THRESHOLD if 'obsidian' not in rel_path.lower() else 1):
             await async_copy(local, history)
             H = Lh
             log_info(f"Initialized history from local for {disp(rel_path)}")
@@ -603,6 +646,7 @@ async def main():
 
     # ------------- Initialize logging -------------
     ensure_dir(LOGS_DIR)
+    cleanup_old_logs(LOG_RETENTION)
     start_time_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     CURRENT_LOG_FILE = os.path.join(LOGS_DIR, f"sync_{start_time_str}.log")
 

@@ -27,6 +27,24 @@ You can toggle how the script behaves by changing the `RUN_CONTINUOUSLY` flag in
 * **Daemon Mode (`RUN_CONTINUOUSLY = True`)**: The script runs indefinitely, scanning your vault every few seconds (`POLL_INTERVAL`). Perfect for running in the background while you work.
 * **One-Shot Mode (`RUN_CONTINUOUSLY = False`)**: The script scans the vault, performs exactly one full synchronization pass (waiting for all asynchronous tasks to finish safely), and then exits. Ideal for Windows Task Scheduler, startup scripts, or trigger shortcuts.
 
+#### Automating via Windows Task Scheduler (Background Sync)
+
+To run the script completely invisibly in the background every time you log in to Windows, you can use Task Scheduler.
+
+1. **Create a wrapper script**
+   Create a file named `run-sync.ps1` in the same directory as your Python script with the following content:
+   ```powershell
+   & py "$PSScriptRoot\sync.py"
+   ```
+
+2. Configure Task Scheduler
+   - In `taskschd.msc` click Action -> Create Task... (not Basic Task).
+   - **General Tab**: Name it and check "*Run whether user is logged on or not*" (optional) and "*Hidden*".
+   - **Triggers Tab**: Set Begin the task to "*At log on*". Check "*Delay task for*" and set it to **1 minute** (this allows iCloud and networking services to initialize first).
+   - **Actions Tab**: Start a program `C:\Windows\System32\conhost.exe` with `--headless powershell.exe -WindowStyle Hidden -NoProfile -NonInteractive -file "C:\PATH\TO\YOUR\run-sync.ps1"`
+   - **Conditions Tab**: Uncheck everything
+   - **Settings Tab**: Check "*If the task fails, restart every: **1 minute***" and set "*Attempt to restart up to: **99 times***".
+
 ---
 
 ## Problem (what went wrong with iCloud + Obsidian on Windows)
