@@ -33,8 +33,21 @@ IGNORE_PATTERNS = [
     # "Private/Note.md",
     # ".obsidian/plugins/recent-files-obsidian",
 ]
+# Common system and sync-related directories that are not relevant for syncing
+IGNORED_DIRS = {
+    '.trash',
+    '.fseventsd',
+    '.spotlight-v100',
+    '.apdisk'
+}
+# Temporary and system files that are not relevant for syncing
+IGNORED_FILES = {
+    '.ds_store',
+    '.trash',
+    'workspace.json'
+}
 # Run mode: one-shot vs continuous daemon
-RUN_CONTINUOUSLY = False
+RUN_CONTINUOUSLY = True
 # Console verbosity level: "quiet" (summary only), "normal" (key events), "verbose" (everything)
 LOG_CONSOLE_LEVEL = "normal"
 # Use shorter relative paths in logs and state file for memory and readability
@@ -99,6 +112,27 @@ ICON_TO_ASCII = {"🔵": "[i]", "🟡": "[w]", "🔴": "[!]", "🟢": "[+]", "�
 STATE_FILE_PATH = os.path.join(LOGS_DIR, STATE_FILE)
 
 # ---------- Path helpers ----------
+# Startup config validation to ensure all paths exist and are properly set up before starting the sync process.
+def validate_config():
+    for name, path in [("LOCAL_VAULT", LOCAL_VAULT), ("ICLOUD_VAULT", ICLOUD_VAULT), ("HISTORY_DIR", HISTORY_DIR), ("LOGS_DIR", LOGS_DIR)]:
+        if not os.path.exists(path):
+            if name in ["HISTORY_DIR", "LOGS_DIR"]:
+                ensure_dir(path)
+                console_event("🟡", Fore.YELLOW, "CONFIG", f"{name} did not exist, created: {path}", level="important")
+                continue
+            console_event("🔴", Fore.RED, "CONFIG", f"{name} does not exist: {path}", level="important")
+            sys.exit(1)
+    if os.path.normcase(LOCAL_VAULT) == os.path.normcase(ICLOUD_VAULT):
+        console_event("🔴", Fore.RED, "CONFIG", "LOCAL_VAULT and ICLOUD_VAULT cannot be the same path!", level="important")
+        sys.exit(1)
+    for name, guarded in [("LOCAL_VAULT", LOCAL_VAULT), ("ICLOUD_VAULT", ICLOUD_VAULT)]:
+        if os.path.normcase(HISTORY_DIR).startswith(os.path.normcase(guarded) + os.sep):
+            console_event("🔴", Fore.RED, "CONFIG", f"HISTORY_DIR cannot be inside {name}!", level="important")
+            sys.exit(1)
+    for p in IGNORE_PATTERNS:
+        if '//' in p or p.startswith('/'):
+            console_event("🟡", Fore.YELLOW, "CONFIG", f"Suspicious IGNORE_PATTERN: '{p}'", level="important")
+
 # Determines if a given relative path should be ignored based on IGNORE_PATTERNS
 def is_ignored(rel_path: str) -> bool:
     # Returns True if the given relative path matches any IGNORE_PATTERNS
@@ -143,14 +177,26 @@ def disp(path):
 
 # ---------- Logging helpers ----------
 # Regex to match ANSI escape codes
+_ANSI_ = re.compile(r'\x1b\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]')
 def strip_ansi(text):
     # Delete colors for clean log files, using Coloramas output
-    ansi_escape = re.compile(r'\x1b\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]')
-    return ansi_escape.sub('', text)
+    return _ANSI_.sub('', text)
 
 # Helper to colorize text for console output using Colorama
 def colored(text, color):
     return color + text + Style.RESET_ALL
+
+# Log buffer
+_log_buffer: list[str] = []
+def _flush_log_buffer():
+    if not _log_buffer or not CURRENT_LOG_FILE:
+        return
+    try:
+        with open(CURRENT_LOG_FILE, 'a', encoding='utf-8') as f:
+            f.writelines(_log_buffer)
+    except Exception as e:
+        console_event("🔴", Fore.RED, "FAILED", f"Log Write Failed: {e}", level="important")
+    _log_buffer.clear()
 
 # Log to file
 def write_to_log_file(msg_type, icon, msg):
@@ -159,14 +205,11 @@ def write_to_log_file(msg_type, icon, msg):
         return
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     clean_msg = strip_ansi(msg)
-    ascii_icon = ICON_TO_ASCII.get(icon, icon)
-    log_line = f"{ascii_icon} [{timestamp}] [{msg_type}] {clean_msg}\n"
-    try:
-        # 'a' means append mode
-        with open(CURRENT_LOG_FILE, 'a', encoding='utf-8') as f:
-            f.write(log_line)
-    except Exception as e:
-        console_event("🔴", Fore.RED, "FAILED", f"Log Write Failed: {e}", level="important")
+    # ascii_icon = ICON_TO_ASCII.get(icon, icon) # Optionally
+    log_line = f"[{timestamp}] [{msg_type}] {clean_msg}\n"
+    _log_buffer.append(log_line)
+    if len(_log_buffer) >= 20:
+        _flush_log_buffer()
 
 # Log info entry
 def log_info(msg_type, msg, level="verbose"):
@@ -205,9 +248,11 @@ def log_custom(icons, color, msg_type, msg, rel_path, level="normal"):
 
 # Console output for key events.
 def console_event(icon, color, msg_type, msg, level="normal"):
-    level_lower = level[0].lower() if isinstance(level, list) else level.lower()
+    level_lower = level.lower()
+    ts = datetime.now().strftime('%H:%M:%S')
+    message = f"  {ts:<4}" + color + f" {icon} {msg_type:<12}" + Style.RESET_ALL + f" {msg}"
     if level_lower == "important":
-        print(color + f"  {icon} {msg_type:<12}" + Style.RESET_ALL + f" {msg}")
+        print(message)
         return
     if LOG_CONSOLE_LEVEL.lower() == "quiet":
         return
@@ -215,19 +260,19 @@ def console_event(icon, color, msg_type, msg, level="normal"):
     event_level = LEVEL_MAP.get(level_lower, 10)
     if current_level < event_level:
         return
-    print(color + f"  {icon} {msg_type:<12}" + Style.RESET_ALL + f" {msg}")
+    print(message)
 
 # Header for each scan cycle, showing timestamp and number of files checked.
 def console_header(files_checked: int):
     ts = datetime.now().strftime('%H:%M:%S')
-    print(Fore.WHITE + Style.BRIGHT + f"\n  🔵 {ts:<12}" + Style.RESET_ALL + f" Scanning... {files_checked} files", flush=True)
+    print(f"  {ts:<4}" + Fore.CYAN + f" 🔵 {'INFO':<12} Scanning... {files_checked} files" + Style.RESET_ALL, flush=True)
 
 # Status message when no changes are detected.
 def console_idle():
     if LOG_CONSOLE_LEVEL.lower() == "quiet":
         return
     ts = datetime.now().strftime('%H:%M:%S')
-    print(Fore.WHITE + Style.DIM + f"  ⚫ {ts:<12}  No changes." + Style.RESET_ALL, end="\r", flush=True)
+    print(f"  {ts:<4}" + Fore.CYAN + f" 🔵 {'INFO':<12} No changes." + Style.RESET_ALL, end="\r", flush=True)
 
 # Startup banner
 def console_startup(mode_str: str):
@@ -240,18 +285,20 @@ def console_startup(mode_str: str):
     print(Fore.WHITE + Style.BRIGHT + "=" * 75 + Style.RESET_ALL)
 
 # Clean up old log files, keeping only the most recent 10 to prevent disk clutter over time.
-def cleanup_old_logs(keep=10):
+async def cleanup_old_logs(keep=10):
     try:
         if not os.path.exists(LOGS_DIR):
             return
-        logs = [os.path.join(LOGS_DIR, f) for f in os.listdir(LOGS_DIR) if f.endswith('.log')]
+        logs = await asyncio.to_thread(
+            lambda: [os.path.join(LOGS_DIR, f) for f in os.listdir(LOGS_DIR) if f.endswith('.log')]
+        )
         if len(logs) <= keep:
             return
         # Sort logs by modification time, oldest first
         logs.sort(key=os.path.getmtime)
         # Delete all but the most recent 'keep' logs
         for old_log in logs[:-keep]:
-            os.remove(old_log)
+            await asyncio.to_thread(os.remove, old_log)
     except Exception as e:
         console_event("🔴", Fore.RED, "FAILED", f"Log Cleanup Failed: {e}", level="important")
 
@@ -268,6 +315,10 @@ def safe_exists(path):
     except Exception:
         log_error("FAILED", f"Error checking existence of {disp(path)}", level="important")
         return False
+
+# Obsidian config files (.obsidian/) can be legitimately tiny (e.g. empty JSON)
+def min_seed_size(rel_path: str) -> int:
+    return 1 if '.obsidian' in rel_path.lower() else TINY_THRESHOLD
 
 # Wrappers to avoid exceptions when files are locked or deleted during checks
 def size_or_zero(path):
@@ -309,10 +360,10 @@ def save_state(state):
 async def hash_file(path, max_retries=6):
     if not os.path.exists(path):
         return None
-    h = hashlib.sha256()
     attempt = 0
     backoff = 0.05
     while True:
+        h = hashlib.sha256()
         try:
             async with aiofiles.open(path, "rb") as f:
                 while True:
@@ -457,17 +508,26 @@ async def restore_local_from_icloud(rel):
     cooldown_time = BIG_FILE_COOLDOWN if file_size > BIG_FILE_THRESHOLD else COOLDOWN_SECONDS
     cooldowns[rel] = time.time() + cooldown_time
 
-# Safely removes a file & dir, logging success or failure without raising exceptions.
-def remove_file_safe(path, description):
+# Safely sync removes a file & dir, logging success or failure without raising exceptions.
+def remove_file_safe_sync(path, description):
     try:
         if os.path.exists(path):
             os.remove(path)
+            log_success("SUCCESS", f"Removed {description}: {disp(path)}", level="verbose")
+    except Exception as e:
+        log_error("FAILED", f"Remove {description} {path}: {e}", level="important")
+
+# Safely async removes a file & dir, logging success or failure without raising exceptions.
+async def remove_file_safe(path, description):
+    try:
+        if os.path.exists(path):
+            await asyncio.to_thread(os.remove, path)
             log_success("SUCCESS", f"Removed {description}: {disp(path)}", level="verbose")
             dir_path = os.path.dirname(path)
             while dir_path and dir_path not in [LOCAL_VAULT, ICLOUD_VAULT, HISTORY_DIR]:
                 if os.path.exists(dir_path) and not os.listdir(dir_path):
                     try:
-                        os.rmdir(dir_path)
+                        await asyncio.to_thread(os.rmdir, dir_path)
                         log_info("INFO", f"Removed empty directory: {disp(dir_path)}", level="verbose")
                         dir_path = os.path.dirname(dir_path)
                     except OSError:
@@ -475,14 +535,16 @@ def remove_file_safe(path, description):
                 else:
                     break
     except Exception as e:
-        log_error("FAILED",f"Remove {description} {path}: {e}", level="important")
+        log_error("FAILED", f"Remove {description} {path}: {e}", level="important")
 
 # ---------- Startup Duplicate Scanner ----------
 def scan_and_clean_duplicates():
     # 1. file_CONFLICT_20260305_123456_123456.md
     # 2. file (1).md, file (2).png
-    conflict_pattern = re.compile(r'_CONFLICT_\d{8}_\d{6}')
+    # 3. .tmp files from incomplete operations
+    conflict_pattern = re.compile(r'_CONFLICT_\d{8}_\d{6}_\d{6}')
     icloud_dup_pattern = re.compile(r'\s\(\d+\)\.[^.]+$')
+    tmp_pattern = re.compile(r'\.tmp$')
     duplicates_found = []
     log_info("INFO", "Scan for potential conflict or duplicate files before starting sync...", level="important")
     for root_dir in [LOCAL_VAULT, ICLOUD_VAULT, HISTORY_DIR]:
@@ -492,7 +554,7 @@ def scan_and_clean_duplicates():
             if '.trash' in dirpath.lower().split(os.sep):
                 continue
             for f in filenames:
-                if conflict_pattern.search(f) or icloud_dup_pattern.search(f):
+                if conflict_pattern.search(f) or icloud_dup_pattern.search(f) or tmp_pattern.search(f):
                     duplicates_found.append(os.path.join(dirpath, f))
     if not duplicates_found:
         log_success("CLEAN", "No duplicates found. Proceeding with synchronization.", level="important")
@@ -505,7 +567,7 @@ def scan_and_clean_duplicates():
     ans = input().strip().lower()
     if ans in ['y', 'yes']:
         for p in duplicates_found:
-            remove_file_safe(p, "Duplicate/Conflict")
+            remove_file_safe_sync(p, "Duplicate/Conflict")
         log_success("CLEAN", "All duplicates removed. Starting synchronization.", level="important")
     else:
         log_warn("INFO", "Skipping duplicate cleanup. Starting synchronization.", level="important")
@@ -523,21 +585,26 @@ def gather_all_rel_paths_fast():
                     name_lower = entry.name.lower()
                     if entry.is_dir():
                         # Ignore common system and sync-related directories that are not relevant for syncing, to reduce noise and improve performance
-                        if name_lower in ['.trash', '.fseventsd', '.spotlight-v100', '.apdisk']:
+                        if name_lower in IGNORED_DIRS:
                             continue
                         collect(entry.path, base_root)
                     elif entry.is_file():
                         # Ignore temporary and system files that are not relevant for syncing, to reduce noise and improve performance
-                        if (name_lower.endswith('.tmp') or name_lower.startswith('._') or name_lower in ['.ds_store', '.trash'] or 'page-preview' in name_lower or 'workspace' in name_lower):
+                        if (name_lower.endswith('.tmp')
+                            or name_lower.startswith('._')
+                            or name_lower in IGNORED_FILES
+                            or 'page-preview' in name_lower):
                             continue
-                        rel = os.path.relpath(entry.path, base_root)
-                        rels.add(os.path.normpath(rel))
+                        rel = os.path.normpath(os.path.relpath(entry.path, base_root))
+                        if is_ignored(rel):
+                            continue
+                        rels.add(rel)
         except FileNotFoundError:
             pass
     collect(LOCAL_VAULT, LOCAL_VAULT)
     collect(ICLOUD_VAULT, ICLOUD_VAULT)
     collect(HISTORY_DIR, HISTORY_DIR)
-    return {r.lstrip(os.sep) for r in rels}
+    return rels
 
 # ---------- Main per-file sync logic ----------
 # Core sync logic for a single file
@@ -556,7 +623,7 @@ async def sync_file(rel_path, state):
     if not L_exists and not C_exists:
         if H_exists:
             log_warn("REMOVING HISTORY", f"{colored('No local', Fore.RED)} & {colored('No iCloud', Fore.RED)} for {disp(rel_path)}", level="important")
-            remove_file_safe(history, "history")
+            await remove_file_safe(history, "history")
         return
     # Helper to re-evaluate hashes forcefully after stability window
     async def recheck_hashes():
@@ -572,8 +639,8 @@ async def sync_file(rel_path, state):
         Lh, Ch, Hh = await recheck_hashes()
         if Ch is not None and Hh is not None and Ch == Hh:
             log_custom([" ←","⚫"], [Fore.RED, Fore.RED], "DELETE", f"{colored('Removing from iCloud', Fore.CYAN)} & history for {disp(rel_path)}", rel_path, level="verbose")
-            remove_file_safe(icloud, "iCloud")
-            remove_file_safe(history, "history")
+            await remove_file_safe(icloud, "iCloud")
+            await remove_file_safe(history, "history")
         else:
             log_custom([" ↓","⚪"], [Fore.CYAN, Fore.CYAN], "PULL", f"{colored('Restoring to local', Fore.GREEN)} from iCloud, local changed vs history for {disp(rel_path)}", rel_path, level="verbose")
             await restore_local_from_icloud(rel_path)
@@ -585,8 +652,8 @@ async def sync_file(rel_path, state):
         Lh, Ch, Hh = await recheck_hashes()
         if Lh is not None and Hh is not None and Lh == Hh:
             log_custom([" ←","⚫"], [Fore.RED, Fore.RED], "DELETE", f"{colored('Removing local', Fore.RED)} & history for {disp(rel_path)}", rel_path, level="verbose")
-            remove_file_safe(local, "local")
-            remove_file_safe(history, "history")
+            await remove_file_safe(local, "local")
+            await remove_file_safe(history, "history")
         else:
             log_custom([" ↑","⚪"], [Fore.GREEN, Fore.GREEN], "PUSH", f"Local changed vs history for {disp(rel_path)} -> pushing local to iCloud", rel_path, level="verbose")
             await push_local_to_icloud(rel_path)
@@ -659,11 +726,11 @@ async def sync_file(rel_path, state):
                     H = Ch
                 return
         # If we can't read one side, we can still seed history from the other side if it looks valid (not tiny)
-        elif Lh is not None and size_or_zero(local) >= (TINY_THRESHOLD if 'obsidian' not in rel_path.lower() else 1):
+        elif Lh is not None and size_or_zero(local) >= min_seed_size(rel_path):
             await async_copy(local, history)
             H = Lh
             log_info("HISTORY", f"Initialized {colored('history from local', Fore.GREEN)} for {disp(rel_path)}", level="verbose")
-        elif Ch is not None and size_or_zero(icloud) >= TINY_THRESHOLD:
+        elif Ch is not None and size_or_zero(icloud) >= min_seed_size(rel_path):
             await async_copy(icloud, history)
             H = Ch
             log_info("HISTORY", f"Initialized {colored('history from iCloud', Fore.CYAN)} for {disp(rel_path)}", level="verbose")
@@ -748,80 +815,94 @@ async def main():
     global state_dirty, CURRENT_LOG_FILE
 
     # ------------- Initialize logging -------------
-    ensure_dir(LOGS_DIR)
-    cleanup_old_logs(LOG_RETENTION)
+    validate_config()
+    await cleanup_old_logs(LOG_RETENTION)
     start_time_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     CURRENT_LOG_FILE = os.path.join(LOGS_DIR, f"sync_{start_time_str}.log")
 
     # ------------- Initialize state and log startup -------------
     mode_str = "DAEMON MODE" if RUN_CONTINUOUSLY else "ONE-SHOT MODE"
     console_startup(mode_str)
-    ensure_dir(HISTORY_DIR)
     scan_and_clean_duplicates()
     state = load_state()
     last_save_time = time.time()
 
     # ------------- Main loop -------------
-    while True:
-        try:
-            # 1. Memory leak prevention: Cleanup old cooldowns
-            now = time.time()
-            expired = [k for k, v in cooldowns.items() if v <= now]
-            for k in expired:
-                del cooldowns[k]
+    try:
+        while True:
+            try:
+                # 1. Memory leak prevention: Cleanup old cooldowns
+                now = time.time()
+                expired = [k for k, v in cooldowns.items() if v <= now]
+                for k in expired:
+                    del cooldowns[k]
 
-            # 2. Fast scan using os.scandir
-            rel_paths = gather_all_rel_paths_fast()
-            rel_paths.update(state.keys())
-            tasks_to_await = []
+                # 2. Fast scan using os.scandir
+                rel_paths = gather_all_rel_paths_fast()
+                # Prevents unnecessary state loading and saves resources
+                rel_paths.update(k for k, v in state.items() if v)
+                tasks_to_await = []
 
-            # 3. Process concurrently
-            active_rels = [
-                r for r in sorted(rel_paths)
-                if '.trash' not in r.lower().split(os.sep)
-                and not is_ignored(r)
-                and r not in active_tasks
-            ]
-            if active_rels and not RUN_CONTINUOUSLY:
-                console_header(len(active_rels))
-            for rel in active_rels:
-                active_tasks.add(rel)
-                task = asyncio.create_task(sync_wrapper(rel, state))
-                tasks_to_await.append(task)
+                # 3. Process concurrently
+                active_rels = [
+                    r for r in sorted(rel_paths)
+                    if r not in active_tasks
+                ]
+                if active_rels and not RUN_CONTINUOUSLY:
+                    console_header(len(active_rels))
+                for rel in active_rels:
+                    active_tasks.add(rel)
+                    task = asyncio.create_task(sync_wrapper(rel, state))
+                    tasks_to_await.append(task)
 
-            # ------------- One-shot mode: wait for tasks and exit -------------
-            if not RUN_CONTINUOUSLY:
-                if tasks_to_await:
-                    log_info("INFO",f"One-shot sync: waiting for {len(tasks_to_await)} tasks to complete...", level="normal")
-                    await asyncio.gather(*tasks_to_await)
-                else:
-                    log_info("INFO", "Nothing to sync.", level="normal")
+                # ------------- One-shot mode: wait for tasks and exit -------------
+                if not RUN_CONTINUOUSLY:
+                    if tasks_to_await:
+                        log_info("INFO",f"One-shot sync: waiting for {len(tasks_to_await)} tasks to complete...", level="normal")
+                        await asyncio.gather(*tasks_to_await)
+                    else:
+                        log_info("INFO", "Nothing to sync.", level="normal")
+                    empty_keys = [k for k, v in state.items() if not v]
+                    for k in empty_keys:
+                        del state[k]
+                    save_state(state)
+                    _flush_log_buffer()
+                    log_success("DONE", "One-shot synchronization complete.", level="normal")
+                    break
+
+                # ------------- Daemon mode: Save state periodically and continue -------------
+                if not tasks_to_await:
+                    console_idle()
+                # 4. Cleanup state entries for files that no longer exist
                 empty_keys = [k for k, v in state.items() if not v]
                 for k in empty_keys:
                     del state[k]
-                save_state(state)
-                log_success("DONE", "One-shot synchronization complete.", level="normal")
-                break
+                    state_dirty = True
 
-            # ------------- Daemon mode: Save state periodically and continue -------------
-            if not tasks_to_await:
-                console_idle()
-            # 4. Cleanup state entries for files that no longer exist
-            empty_keys = [k for k, v in state.items() if not v]
-            for k in empty_keys:
-                del state[k]
-                state_dirty = True
+                # 5. Save state if dirty, debounced to every 5 seconds
+                now_t = time.time()
+                if state_dirty and now_t - last_save_time > 5:
+                    save_state(state)
+                    _flush_log_buffer()
+                    state_dirty = False
+                    last_save_time = now_t
+                elif now_t - last_save_time > 5:
+                    _flush_log_buffer()
+                    last_save_time = now_t
 
-            # 5. Save state if dirty, debounced to every 5 seconds
-            if state_dirty and time.time() - last_save_time > 5:
-                save_state(state)
-                state_dirty = False
-                last_save_time = time.time()
-
-        except Exception as outer:
-            log_error("ERROR", f"Unexpected error in main loop: {outer}", level="important")
-            log_error("TRACEBACK", traceback.format_exc(), level="important")
-        await asyncio.sleep(POLL_INTERVAL)
+            except Exception as outer:
+                log_error("ERROR", f"Unexpected error in main loop: {outer}", level="important")
+                log_error("TRACEBACK", traceback.format_exc(), level="important")
+            await asyncio.sleep(POLL_INTERVAL)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        log_warn("INFO", "Shutdown requested, saving state...", level="important")
+        save_state(state)
+        _flush_log_buffer()
+        log_success("DONE", "Graceful shutdown complete.", level="important")
+        sys.exit(0)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
