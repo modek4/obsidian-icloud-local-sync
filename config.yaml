@@ -2,13 +2,13 @@
 # Copy this file and adjust paths for your setup.
 
 paths:
-  local_vault: "C:\\Users\\simar\\Projects\\obsidian-vaults\\Personal"
-  icloud_vault: "C:\\Users\\simar\\iCloudDrive\\iCloud~md~obsidian\\Personal"
-  history_dir: "C:\\Users\\simar\\Projects\\obsidian-vaults\\History"
-  logs_dir: "C:\\Users\\simar\\Projects\\obsidian-vaults\\Logs"
+  local_vault: "C:\\Obsidian\\Vault"
+  icloud_vault: "C:\\Users\\user\\iCloudDrive\\iCloud~md~obsidian"
+  history_dir: "C:\\Obsidian\\History"
+  logs_dir: "C:\\Obsidian\\Logs"
 
 sync:
-  run_continuously: true
+  run_continuously: false
   poll_interval: 2
   stability_window: 3
   stabilize_wait: 8

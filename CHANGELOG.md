@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.1] - 2026-04-05
+
+### Summary
+- Improved reliability, startup safety, logging, and error handling across the sync flow.
+- Added safer config validation, more robust file operations, better duplicate/state handling, and cleaner async runtime behavior.
+
+### Added
+- Handle the case where both files have stabilized but still differ (L2 == L and C2 == C but L != C)
+
+## Fixed
+- Config: `validate()` returns errors (no `sys.exit`); added path equality guards & `max_concurrent_io`.
+- Engine: `gather_rel_paths()` threaded; `sys.exit` changed to `ValueError`; logs init before config check.
+- I/O: Cross-platform Win32 imports; clear `.tmp` before copy; race-condition guard in file removal.
+- State & Duplicates: Atomic `save_state()`; scan `.tmp` files; run duplicate scan before main loop.
+- Logging: Flush before crashes; clear buffer only on success; minimum log retention limit.
+- Misc: Added type hints, docs, and YAML read guard.
+
 ## [1.0.0] - 2026-03-31
 
 ### Summary
