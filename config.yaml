@@ -1,0 +1,42 @@
+# Obsidian iCloud Windows Sync - Configuration
+# Copy this file and adjust paths for your setup.
+
+paths:
+  local_vault: "C:\\Users\\simar\\Projects\\obsidian-vaults\\Personal"
+  icloud_vault: "C:\\Users\\simar\\iCloudDrive\\iCloud~md~obsidian\\Personal"
+  history_dir: "C:\\Users\\simar\\Projects\\obsidian-vaults\\History"
+  logs_dir: "C:\\Users\\simar\\Projects\\obsidian-vaults\\Logs"
+
+sync:
+  run_continuously: true
+  poll_interval: 2
+  stability_window: 3
+  stabilize_wait: 8
+  cooldown_seconds: 3
+  big_file_cooldown: 30
+  big_file_threshold: 102400   # 100 KB
+  tiny_threshold: 8
+
+logging:
+  console_level: "normal"      # quiet | normal | verbose
+  shorter_paths: true
+  max_display_length: 50
+  log_retention: 10
+
+ignore:
+  patterns: []
+  # Examples:
+  #   - ".obsidian/plugins"
+  #   - ".obsidian/themes"
+  #   - "*.canvas"
+  #   - "Templates/*"
+  dirs:
+    - ".trash"
+    - ".fseventsd"
+    - ".spotlight-v100"
+    - ".apdisk"
+  files:
+    - ".ds_store"
+    - ".trash"
+    - "workspace.json"
+    - "workspace-mobile.json"

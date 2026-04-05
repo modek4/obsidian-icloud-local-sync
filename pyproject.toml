@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsidian-sync"
+version = "1.0.0"
+description = "Async three-way sync engine for Obsidian vaults between Windows and iCloud Drive"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "colorama>=0.4.6",
+    "aiofiles>=23.2.1",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+obsidian-sync = "obsidian_sync.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
