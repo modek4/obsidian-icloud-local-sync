@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "obsidian-sync"
-version = "1.0.0"
+version = "1.0.1"
 description = "Async three-way sync engine for Obsidian vaults between Windows and iCloud Drive"
 readme = "README.md"
 requires-python = ">=3.11"
