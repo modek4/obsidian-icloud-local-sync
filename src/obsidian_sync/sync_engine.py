@@ -7,6 +7,7 @@ from colorama import Fore
 
 from .logger import colored
 from .disk_io import safe_exists, size_or_zero, safe_mtime, ensure_dir
+from .icloud_status import ICloudStatusChecker, ICloudSyncState
 
 class SyncEngine:
     """
@@ -31,6 +32,10 @@ class SyncEngine:
         self.cooldowns: dict[str, float] = {}
         self.active_tasks: set[str] = set()
         self.io_semaphore = asyncio.Semaphore(self.config.max_concurrent_io)
+        if config.check_icloud_status:
+            self.icloud_checker = ICloudStatusChecker()
+        else:
+            self.icloud_checker = None
 
     # ── Core file operations ─────────────────────────────────────
 
@@ -153,6 +158,22 @@ class SyncEngine:
         C_exists = safe_exists(icloud)
         H_exists = safe_exists(history)
 
+        # ── iCloud status guard ──
+        if cfg.check_icloud_status and self.icloud_checker and C_exists:
+            state = self.icloud_checker.detect(icloud)
+            if not state.is_safe and state != ICloudSyncState.UNKNOWN:
+                can_push = False
+                if L_exists and H_exists:
+                    L_hash = await self.hasher.get_cached_hash(local, 'L', rel_path)
+                    H_hash = await self.hasher.get_cached_hash(history, 'H', rel_path)
+                    can_push = L_hash is not None and H_hash is not None and L_hash != H_hash
+                if can_push:
+                    self.log.info("ICLOUD_WAIT", f"[{state.status}] Local changed, pushing over placeholder: {d}", level="verbose")
+                    await self.push_to_icloud(rel_path)
+                    return
+                self.log.info("ICLOUD_WAIT", f"[{state.status}] Waiting {d}", level="verbose")
+                return
+
         # ── Nothing exists anywhere ──
         if not L_exists and not C_exists:
             if H_exists:
@@ -197,7 +218,7 @@ class SyncEngine:
             if Lh is None:
                 self.log.info("SKIP", f"After stabilize local missing for {d}", level="verbose")
                 return
-            if size_or_zero(local) < cfg.tiny_threshold:
+            if size_or_zero(local) < cfg.min_seed_size(rel_path):
                 self.log.info("SKIP", f"Local too small, deferring {d}", level="verbose")
                 return
             self.log.custom([" ↑", "⚪"], [Fore.GREEN, Fore.GREEN], "PUSH", f"{colored('Pushing to iCloud', Fore.CYAN)} for {d}", rel_path, level="verbose")
@@ -286,6 +307,11 @@ class SyncEngine:
         L2 = await self.hasher.get_cached_hash(local, 'L', rel_path, force=True) if safe_exists(local) else None
         C2 = await self.hasher.get_cached_hash(icloud, 'C', rel_path, force=True) if safe_exists(icloud) else None
 
+        if L2 is not None and C2 is not None and L2 == C2:
+            await self.io.async_copy(local, history)
+            self.log.info("RESOLVED", f"Both stabilized to same content for {d}", level="verbose")
+            return
+
         if L2 is not None and L2 != L:
             self.log.warn("CONFLICT", f"{colored('Local still changing', Fore.YELLOW)}, choose local: {d}", level="important")
             await self.io.create_conflict_duplicate(icloud)
@@ -355,12 +381,13 @@ class SyncEngine:
 
         # Validate config
         errors = cfg.validate()
+        missing_dirs = [e for e in errors if e[0] == "dir_missing"]
+        if missing_dirs:
+            for path in [cfg.history_dir, cfg.logs_dir]:
+                if path:
+                    os.makedirs(path, exist_ok=True)
+
         for error, level, msg in errors:
-            if error == "dir_missing":
-                if not cfg.history_dir or not os.path.exists(cfg.history_dir):
-                    os.makedirs(cfg.history_dir, exist_ok=True)
-                if not cfg.logs_dir or not os.path.exists(cfg.logs_dir):
-                    os.makedirs(cfg.logs_dir, exist_ok=True)
             if level == "critical":
                 self.log.error("CONFIG", msg, level="important")
                 raise ValueError(f"Critical configuration error: {msg}")
@@ -400,9 +427,7 @@ class SyncEngine:
                     # One-shot mode: wait and exit
                     if not cfg.run_continuously:
                         if tasks:
-                            self.log.info("INFO",
-                                          f"One-shot: waiting for {len(tasks)} tasks...",
-                                          level="normal")
+                            self.log.info("INFO", f"One-shot: waiting for {len(tasks)} tasks...", level="normal")
                             await asyncio.gather(*tasks)
                         else:
                             self.log.info("INFO", "Nothing to sync.", level="normal")
@@ -417,11 +442,9 @@ class SyncEngine:
 
                     # Periodic state save (every 5s)
                     now_t = time.time()
-                    if self.hasher.dirty and now_t - last_save > 5:
-                        self.hasher.save_state()
-                        self.log.flush()
-                        last_save = now_t
-                    elif now_t - last_save > 5:
+                    if now_t - last_save > 5:
+                        if self.hasher.dirty:
+                            self.hasher.save_state()
                         self.log.flush()
                         last_save = now_t
 
