@@ -8,7 +8,9 @@ paths:
   logs_dir: "C:\\Obsidian\\Logs"
 
 sync:
-  run_continuously: false
+  run_continuously: true
+  user_interface: true #TODO Implement UI
+  check_icloud_status: true
   poll_interval: 2
   stability_window: 3
   stabilize_wait: 8

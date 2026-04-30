@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0] - 2026-04-09
+
+### Summary
+- File duplicate protection added via kernel32
+- Added tests `./src/obsidian_sync/tests`
+
+### Added
+- `ICloudStatusChecker` reads Windows file attributes via `GetFileAttributesW` (kernel32) to determine iCloud sync state
+- `ICloudSyncState` enum with states: `LOCAL`, `PINNED`, `PENDING`, `DOWNLOADING`, `CLOUD_ONLY`, `UNKNOWN`
+- iCloud status guard defers processing of files that are not yet locally available
+- If local file has changed relative to history (`L != H`), push proceeds even over a cloud-only placeholder
+- `RtlSetProcessPlaceholderCompatibilityMode(PHCM_EXPOSE_PLACEHOLDERS)` ensures placeholder attributes are not hidden by the OS
+- New config values: `user_interface: true` and `check_icloud_status: true`
+
 ## [1.0.1] - 2026-04-05
 
 ### Summary

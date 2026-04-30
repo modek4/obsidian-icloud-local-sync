@@ -5,22 +5,14 @@ import ctypes
 import platform
 
 from datetime import datetime
+from ctypes import wintypes
 
 # ── Windows API ──────────────────────────────────────────────────
 MOVEFILE_REPLACE_EXISTING = 0x1
 MOVEFILE_WRITE_THROUGH = 0x8
 FILE_ATTRIBUTE_NORMAL = 0x80
 
-if platform.system() in ("Windows", "Microsoft"):
-    from ctypes import wintypes
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    MoveFileExW = kernel32.MoveFileExW
-    MoveFileExW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
-    MoveFileExW.restype = wintypes.BOOL
-    SetFileAttributesW = kernel32.SetFileAttributesW
-    SetFileAttributesW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
-    SetFileAttributesW.restype = wintypes.BOOL
-else:
+if not platform.system() in ("Windows", "Microsoft"):
     MoveFileExW = None
     SetFileAttributesW = None
 
@@ -100,6 +92,13 @@ class DiskIO:
             raise RuntimeError("Disk operations are only supported on Windows.")
         self.config = config
         self.log = logger
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        MoveFileExW = kernel32.MoveFileExW
+        MoveFileExW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+        MoveFileExW.restype = wintypes.BOOL
+        SetFileAttributesW = kernel32.SetFileAttributesW
+        SetFileAttributesW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
+        SetFileAttributesW.restype = wintypes.BOOL
 
     def set_normal_attributes(self, path: str) -> bool:
         """
@@ -113,7 +112,7 @@ class DiskIO:
         try:
             if not os.path.exists(path):
                 return True
-            return bool(SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL))
+            return bool(self._k32.SetFileAttributesW(str(path), FILE_ATTRIBUTE_NORMAL))
         except Exception:
             return False
 
@@ -161,6 +160,9 @@ class DiskIO:
                 if attempt >= max_retries:
                     # Win32 MoveFileEx fallback
                     try:
+                        if MoveFileExW is None:
+                            self.log.error("FAILED", "MoveFileExW unavailable on this platform")
+                            raise PermissionError(f"Unable to replace {dst}")
                         ok = MoveFileExW(tmp, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
                         if ok:
                             self.log.success("SUCCESS", f"MoveFileEx: {self.config.disp(dst)}", level="verbose")

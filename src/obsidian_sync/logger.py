@@ -7,7 +7,7 @@ from datetime import datetime
 from colorama import Fore, Style, init as colorama_init
 
 LEVEL_MAP = {"quiet": 0, "normal": 10, "verbose": 100, "important": 1000}
-_ANSI_RE = re.compile(r'\x1b\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]')
+ANSI_REPLACE = re.compile(r'\x1b\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]')
 
 def strip_ansi(text: str) -> str:
     """
@@ -18,7 +18,7 @@ def strip_ansi(text: str) -> str:
     Returns:
         str: The plain text string suitable for writing to standard log files.
     """
-    return _ANSI_RE.sub('', text)
+    return ANSI_REPLACE.sub('', text)
 
 def colored(text: str, color) -> str:
     """
@@ -148,7 +148,7 @@ class SyncLogger:
             self.write_to_file("ERROR", "Critical error. Stopping to prevent data loss.")
             self.flush()
             self.console_event("🔴", Fore.RED, "ERROR", "Critical error. Stopping to prevent data loss.", level="important")
-            sys.exit(1)
+            raise SystemExit(1)
 
     def success(self, msg_type: str, msg: str, level: str = "important"):
         """
@@ -242,6 +242,7 @@ class SyncLogger:
             if len(logs) <= keep:
                 return
             for old in logs[:-keep]:
-                await asyncio.to_thread(os.remove, old)
+                if old != self.log_file:
+                    await asyncio.to_thread(os.remove, old)
         except Exception as e:
             self.console_event("🔴", Fore.RED, "FAILED", f"Log Cleanup Failed: {e}", level="important")

@@ -36,7 +36,10 @@ class FileHasher:
             return
         try:
             with open(path, "r", encoding="utf-8") as f:
-                self.state = json.load(f)
+                data = json.load(f)
+                if not isinstance(data, dict):
+                    raise ValueError(f"State file has unexpected format: {type(data)}")
+                self.state = data
         except Exception as e:
             self.log.warn("WARNING", f"Loading state file failed: {e}", level="important")
             try:
@@ -77,7 +80,7 @@ class FileHasher:
         Returns:
             Optional[str]: The computed SHA-256 hex digest, or None if the file doesn't exist or couldn't be read after all retries.
         """
-        if not os.path.exists(path):
+        if not safe_exists(path):
             return None
         attempt = 0
         backoff = 0.05

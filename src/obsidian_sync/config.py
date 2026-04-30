@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 
 import yaml
 
+DEFAULT_IGNORED_DIRS = {'.trash', '.fseventsd', '.spotlight-v100', '.apdisk'}
+DEFAULT_IGNORED_FILES = {'.ds_store', '.trash', 'workspace.json', 'workspace-mobile.json'}
+
 @dataclass
 class SyncConfig:
     """
@@ -16,6 +19,8 @@ class SyncConfig:
     logs_dir: str = ""
     # Sync
     run_continuously: bool = True
+    user_interface: bool = True
+    check_icloud_status: bool = True
     poll_interval: int = 2
     stability_window: int = 3
     stabilize_wait: int = 8
@@ -31,12 +36,8 @@ class SyncConfig:
     log_retention: int = 10
     # Ignore
     ignore_patterns: list[str] = field(default_factory=list)
-    ignored_dirs: set[str] = field(default_factory=lambda: {
-        '.trash', '.fseventsd', '.spotlight-v100', '.apdisk'
-    })
-    ignored_files: set[str] = field(default_factory=lambda: {
-        '.ds_store', '.trash', 'workspace.json', 'workspace-mobile.json'
-    })
+    ignored_dirs: set[str] = field(default_factory=lambda: set(DEFAULT_IGNORED_DIRS))
+    ignored_files: set[str] = field(default_factory=lambda: set(DEFAULT_IGNORED_FILES))
 
     @classmethod
     def from_yaml(cls, path: str) -> "SyncConfig":
@@ -71,6 +72,8 @@ class SyncConfig:
             history_dir=paths.get("history_dir", ""),
             logs_dir=paths.get("logs_dir", ""),
             run_continuously=sync.get("run_continuously", True),
+            user_interface=sync.get("user_interface", True),
+            check_icloud_status=sync.get("check_icloud_status", True),
             poll_interval=sync.get("poll_interval", 2),
             stability_window=sync.get("stability_window", 3),
             stabilize_wait=sync.get("stabilize_wait", 8),
@@ -84,12 +87,8 @@ class SyncConfig:
             max_display_length=logging_cfg.get("max_display_length", 50),
             log_retention=logging_cfg.get("log_retention", 10),
             ignore_patterns=ignore.get("patterns", []),
-            ignored_dirs=set(ignore.get("dirs", [
-                '.trash', '.fseventsd', '.spotlight-v100', '.apdisk'
-            ])),
-            ignored_files=set(ignore.get("files", [
-                '.ds_store', '.trash', 'workspace.json', 'workspace-mobile.json'
-            ])),
+            ignored_dirs=set(ignore.get("dirs", DEFAULT_IGNORED_DIRS)),
+            ignored_files=set(ignore.get("files", DEFAULT_IGNORED_FILES)),
         )
 
     @property
@@ -139,6 +138,12 @@ class SyncConfig:
             if '//' in p or p.startswith('/'):
                 errors.append(("suspicious_ignore_pattern", "warn", f"Suspicious ignore pattern: '{p}'"))
 
+        if self.poll_interval <= 0:
+            errors.append(("invalid_value", "critical", "poll_interval must be positive"))
+
+        if self.stability_window < 0:
+            errors.append(("invalid_value", "critical", "stability_window cannot be negative"))
+
         return errors
 
     def is_ignored(self, rel_path: str) -> bool:
@@ -150,9 +155,9 @@ class SyncConfig:
         Returns:
             bool: True if the path should be ignored, False otherwise.
         """
-        rel = rel_path.replace(os.sep, '/').lower()
+        rel = rel_path.replace('\\', '/').replace(os.sep, '/').lower()
         for pattern in self.ignore_patterns:
-            pat = pattern.replace(os.sep, '/').lower()
+            pat = pattern.replace('\\', '/').replace(os.sep, '/').lower()
             if rel == pat:
                 return True
             if fnmatch.fnmatch(rel, pat):
@@ -173,11 +178,13 @@ class SyncConfig:
         if not self.shorter_paths:
             return path
         if os.path.isabs(path):
+            matched = False
             for root in [self.local_vault, self.icloud_vault, self.history_dir]:
                 if root and (path == root or path.startswith(root + os.sep)):
                     path = os.path.relpath(path, root)
+                    matched = True
                     break
-            else:
+            if not matched:
                 return os.path.basename(path)
         if len(path) <= self.max_display_length:
             return path

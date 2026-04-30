@@ -40,7 +40,8 @@ class DuplicateScanner:
             if not root_dir or not os.path.exists(root_dir):
                 continue
             for dirpath, _, filenames in os.walk(root_dir):
-                if '.trash' in dirpath.lower().split(os.sep):
+                parts = dirpath.replace('\\', '/').lower().split('/')
+                if '.trash' in parts:
                     continue
                 for f in filenames:
                     if conflict_re.search(f) or icloud_dup_re.search(f) or tmp_re.search(f):
@@ -56,7 +57,12 @@ class DuplicateScanner:
 
         self.log.warn("ACTION", "Delete them WITHOUT RECOVERY before sync? (y/N)", level="important")
         sys.stdout.flush()
-        ans = input().strip().lower()
+        try:
+            ans = input().strip().lower()
+        except KeyboardInterrupt:
+            print()
+            self.log.warn("INFO", "Interrupted, skipping duplicate cleanup.", level="important")
+            return
 
         if ans in ('y', 'yes'):
             failed_deletions = []
